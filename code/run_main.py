@@ -24,7 +24,7 @@ if __name__ == "__main__":
     spatial_locations = cx.spatial_location(params.n_layer, params.layers_name, params.num_cols, 300, 300, 2300, 50)
     
     # Plot spatial distribution of neurons in each layer
-    #pl.spatial_3d_plot(spatial_locations, params.layers_name)
+    pl.spatial_3d_plot(spatial_locations, params.layers_name)
 
     cortex = {}
     for layer_name in params.layers_name:

@@ -32,5 +32,12 @@ layer_colors = {
     "6E":   "#2e4876",  "6I":   "#85588c"
 }
 
-pl.raster_plot(spikes, sim_time, layer_order, layer_colors)
-pl.plot_rates(spikes, layer_order, sim_time)
+
+#pl.raster_plot(spikes, sim_time, layer_order, layer_colors)
+#pl.plot_rates(spikes, layer_order, sim_time)
+#pl.CV_boxplot(spikes, layer_order, method='CV')
+#pl.CV_boxplot(spikes, layer_order, method='CV2')
+#pl.FR_boxplot(spikes, layer_order)
+#pl.kuramoto_order_boxplot(spikes, layer_order)
+#pl.sttc_boxplot(spikes, layer_order)
+pl.plot_psd(spikes, layer_order, sim_time)

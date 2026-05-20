@@ -91,7 +91,8 @@ def build_nest_synapses(nodes_dict, conn_table, connection_type='random'):
                         'N': nsyn,
                         'allow_multapses': True,
                         'allow_autapses': False}
-            syn_spec = {'weight': nest.random.normal(mean=weight_mean, std=weight_std), 'delay': nest.math.redraw(nest.random.normal(mean=delay_mean, std=delay_std), 0.1, 100.0)}
+            syn_spec = {'synapse_model': 'static_synapse','weight': nest.random.normal(mean=weight_mean, std=weight_std), 'delay': nest.math.redraw(nest.random.normal(mean=delay_mean, std=delay_std), 0.1, 100.0),
+                        'receptor_type': 0}
             nest.Connect(src_nodes, tgt_nodes, conn_spec, syn_spec)
             print(f"Connected {src_key} to {tgt_key} with {nsyn} synapses (Random)")
             
