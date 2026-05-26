@@ -56,6 +56,7 @@ if __name__ == "__main__":
 
     # 5. Attach spike recorders
     net.create_recorders()
+    net.create_current_recorders()
 
     # ------------------------------------------------------------------
     # Run the simulation
@@ -66,3 +67,4 @@ if __name__ == "__main__":
     # Post-simulation: merge per-process spike files into combined CSVs
     # ------------------------------------------------------------------
     net.save_data(data_path="data", data_prefix="m1_")
+    net.save_current_data(data_path="data", data_prefix="m1_")

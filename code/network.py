@@ -10,12 +10,14 @@ Typical usage
 >>> net.connect()
 >>> net.create_bg_input()
 >>> net.create_recorders()
+>>> net.create_current_recorders()
 >>> net.simulate()
 >>> net.save_data()
+>>> net.save_current_data()
 
-The public attributes ``nodes``, ``spike_recorders``, and
-``spatial_locations`` are available after the corresponding build step
-for downstream use (e.g. plotting).
+The public attributes ``nodes``, ``spike_recorders``,
+``current_recorders``, and ``spatial_locations`` are available after
+the corresponding build step for downstream use (e.g. plotting).
 """
 
 import glob
@@ -52,6 +54,9 @@ class M1Network:
     spike_recorders : dict[str, NodeCollection]
         Spike recorder devices keyed by layer name.
         Available after :meth:`create_recorders`.
+    current_recorders : dict[str, NodeCollection]
+        Multimeter devices (recording ``I_syn_ex`` and ``I_syn_in``) keyed
+        by layer name.  Available after :meth:`create_current_recorders`.
     bg_generators : dict[str, NodeCollection]
         Background Poisson generators keyed by layer name.
         Available after :meth:`create_bg_input`.
@@ -73,6 +78,7 @@ class M1Network:
         # Populated by the build methods below
         self.nodes: dict = {}
         self.spike_recorders: dict = {}
+        self.current_recorders: dict = {}
         self.bg_generators: dict = {}
         self.spatial_locations: dict = {}
 
@@ -324,6 +330,59 @@ class M1Network:
 
         print("Spike recorders connected.\n")
 
+    def create_current_recorders(self, interval: float | None = None) -> None:
+        """
+        Create multimeter recorders for excitatory and inhibitory synaptic
+        currents and connect them to every neuron population.
+
+        One ``multimeter`` is created per layer (covering all columns) and
+        records the ``iaf_psc_exp`` state variables ``I_syn_ex`` and
+        ``I_syn_in`` at each recording step.  Recorders are stored in
+        :attr:`current_recorders`.
+
+        The multimeter must be connected *before* the simulation starts
+        (i.e. call this method before :meth:`simulate`).
+
+        Parameters
+        ----------
+        interval : float or None
+            Recording interval in ms.  ``None`` (default) lets NEST use its
+            own resolution (typically 0.1 ms), which records every time step.
+            Increase this value (e.g. ``1.0``) to reduce file size when
+            high temporal resolution is not required.
+
+        .. note::
+            Recording from all neurons at every time step produces large
+            files (~4 columns × n_neurons × n_steps per layer).  Consider
+            setting a coarser ``interval`` or recording from a sub-population
+            if disk space is a concern.
+        """
+        print("Creating current recorders (multimeters)…")
+
+        mm_params: dict = {
+            "record_from": ["I_syn_ex", "I_syn_in"],
+            "record_to": "ascii",
+        }
+        if interval is not None:
+            mm_params["interval"] = float(interval)
+
+        for layer_name in params.layers_name:
+            label = "currents_" + layer_name.replace("/", "")
+            mm = nest.Create(
+                "multimeter",
+                params={**mm_params, "label": label},
+            )
+            for col_nc in self.nodes[layer_name]:
+                nest.Connect(mm, col_nc)
+            self.current_recorders[layer_name] = mm
+            n_total = sum(len(nc) for nc in self.nodes[layer_name])
+            print(
+                f"  Multimeter '{label}' connected to '{layer_name}' "
+                f"({n_total} neurons)"
+            )
+
+        print("Current recorders connected.\n")
+
     def simulate(self) -> None:
         """Run the NEST simulation for ``params.simulation_time`` ms."""
         print(f"Simulating for {params.simulation_time} ms…")
@@ -383,3 +442,67 @@ class M1Network:
                 os.remove(f)
 
         print("Data processing complete.\n")
+
+    def save_current_data(
+        self, data_path: str = "data", data_prefix: str = "m1_"
+    ) -> None:
+        """
+        Merge per-process current files written by NEST into one CSV per layer.
+
+        NEST writes one ``.dat`` file per multimeter per MPI process.  This
+        method concatenates all files for each layer, sorts by time and then
+        sender ID, writes a single ``combined_currents_<layer>.csv``, and
+        removes the originals.
+
+        The output CSV contains four columns:
+
+        * ``sender``   — NEST global ID of the recorded neuron
+        * ``time_ms``  — simulation time of the sample (ms)
+        * ``I_syn_ex`` — excitatory synaptic current (pA)
+        * ``I_syn_in`` — inhibitory synaptic current (pA)
+
+        Parameters
+        ----------
+        data_path : str
+            Directory where NEST wrote the ``.dat`` files (must match
+            ``nest.data_path``).
+        data_prefix : str
+            File-name prefix used by NEST (must match ``nest.data_prefix``).
+        """
+        print("Processing current data…")
+        layer_labels = [ln.replace("/", "") for ln in params.layers_name]
+
+        for label in layer_labels:
+            pattern = os.path.join(
+                data_path, f"{data_prefix}currents_{label}-*.dat"
+            )
+            current_files = glob.glob(pattern)
+
+            if not current_files:
+                print(f"  No current files found for layer '{label}'.")
+                continue
+
+            dfs = [
+                pd.read_csv(
+                    f,
+                    sep=r"\s+",
+                    skiprows=3,
+                    names=["sender", "time_ms", "I_syn_ex", "I_syn_in"],
+                )
+                for f in current_files
+            ]
+            combined = pd.concat(dfs, ignore_index=True)
+            combined.sort_values(by=["time_ms", "sender"], inplace=True)
+
+            out_path = os.path.join(
+                data_path, f"combined_currents_{label}.csv"
+            )
+            combined.to_csv(out_path, index=False)
+            print(
+                f"  '{label}': merged {len(current_files)} file(s) → {out_path}"
+            )
+
+            for f in current_files:
+                os.remove(f)
+
+        print("Current data processing complete.\n")
