@@ -1,7 +1,8 @@
 """
 Run Validation Plots
 ====================
-Loads the combined spike CSVs produced by :meth:`M1Network.save_data` and
+Loads the combined spike and synaptic-current CSVs produced by
+:meth:`M1Network.save_data` / :meth:`M1Network.save_current_data` and
 generates all post-simulation validation figures.
 
 Run from the project root
@@ -32,24 +33,42 @@ if __name__ == "__main__":
     DATA_DIR     = "data"
     SIM_TIME     = params.simulation_time   # ms
     TRANSIENT_MS = 50.0                     # ms to discard from the start
+    DT_CURRENT   = 0.1                      # multimeter recording interval (ms);
+                                            # must match create_current_recorders(interval=...)
     LAYER_ORDER  = params.layers_name       # ['2/3E', '2/3I', '4E', ...]
     LAYER_COLORS = pl.LAYER_COLORS
 
     # ------------------------------------------------------------------
     # Load spike data
     # ------------------------------------------------------------------
+    print("Loading spike data…")
     spikes = {}
     for layer_name in LAYER_ORDER:
         label = layer_name.replace("/", "")
         path = os.path.join(DATA_DIR, f"combined_spikes_{label}.csv")
         df = pd.read_csv(path)
         spikes[layer_name] = df[df["time_ms"] > TRANSIENT_MS].reset_index(drop=True)
-        print(f"  Loaded '{label}': {len(spikes[layer_name])} spikes (after {TRANSIENT_MS} ms transient)")
+        print(f"  Loaded '{label}': {len(spikes[layer_name])} spikes "
+              f"(after {TRANSIENT_MS} ms transient)")
+
+    print()
+
+    # ------------------------------------------------------------------
+    # Load synaptic-current data
+    # ------------------------------------------------------------------
+    print("Loading synaptic-current data…")
+    currents = {}
+    for layer_name in LAYER_ORDER:
+        label = layer_name.replace("/", "")
+        path = os.path.join(DATA_DIR, f"combined_currents_{label}.csv")
+        df = pd.read_csv(path)
+        currents[layer_name] = df[df["time_ms"] > TRANSIENT_MS].reset_index(drop=True)
+        print(f"  Loaded '{label}': {len(currents[layer_name])} samples "
+              f"(after {TRANSIENT_MS} ms transient)")
 
     print()
 
     conn_table = pd.read_csv("code/connection_table.csv", delimiter=" ", index_col=False)
-
 
     # ------------------------------------------------------------------
     # Generate figures
@@ -80,7 +99,10 @@ if __name__ == "__main__":
     pl.sttc_boxplot(spikes, LAYER_ORDER, SIM_TIME)
     print("  ✓ sttc_boxplot")
 
-    pl.plot_psd(spikes, LAYER_ORDER, SIM_TIME)
-    print("  ✓ plot_psd")
+    pl.plot_lfp(currents, LAYER_ORDER, dt=DT_CURRENT)
+    print("  ✓ plot_lfp")
+
+    pl.plot_lfp_psd(currents, LAYER_ORDER, dt=DT_CURRENT)
+    print("  ✓ plot_lfp_psd")
 
     print("\nAll figures saved to figures/")

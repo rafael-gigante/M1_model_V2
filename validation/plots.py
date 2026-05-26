@@ -3,25 +3,34 @@ Validation Plots
 ================
 Post-simulation visualisation functions for the M1 cortical column network.
 
-All analysis functions accept a ``spikes`` dictionary whose values are
-pandas DataFrames with ``sender`` (int) and ``time_ms`` (float) columns,
-keyed by layer name (e.g. ``'2/3E'``).  Simulation parameters that affect
-the analysis window (e.g. ``sim_time``) are passed explicitly as arguments
-so that this module has no dependency on ``parameters.py``.
+Spike-based analysis functions accept a ``spikes`` dictionary whose
+values are pandas DataFrames with ``sender`` (int) and ``time_ms``
+(float) columns, keyed by layer name (e.g. ``'2/3E'``).
 
-Functions that require an active NEST kernel are clearly marked and should
-be called before ``nest.ResetKernel``.
+Current-based functions (e.g. :func:`plot_lfp_psd`) accept a
+``currents`` dictionary whose values are DataFrames with columns
+``sender``, ``time_ms``, ``I_syn_ex``, and ``I_syn_in``, as produced
+by :meth:`M1Network.save_current_data`.
+
+Simulation parameters that affect the analysis window (e.g.
+``sim_time``) are passed explicitly as arguments so that this module
+has no dependency on ``parameters.py``.
+
+Functions that require an active NEST kernel are clearly marked and
+should be called before ``nest.ResetKernel``.
 
 Typical usage
 -------------
 >>> import plots as pl
 >>> pl.raster_plot(spikes, sim_time, layer_order)
 >>> pl.FR_boxplot(spikes, layer_order)
+>>> pl.plot_lfp_psd(currents, layer_order, dt=0.1)
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.ndimage
+import scipy.signal
 import seaborn as sns
 from scipy.ndimage import gaussian_filter1d
 
@@ -431,45 +440,193 @@ def sttc_boxplot(spikes, layer_order, sim_time, delta_t=5.0, window_ms=500.0):
     )
 
 
-def plot_psd(spikes, layer_order, sim_time, dt=0.1, smooth_sigma=1.5, max_freq_hz=100):
+def plot_lfp(
+    currents,
+    layer_order,
+    dt=0.1,
+    smooth_sigma=0.0,
+    window_ms=None,
+):
     """
-    Power spectral density of the population firing rate for each layer.
+    Stacked time-series plot of the LFP proxy for each layer.
+
+    The LFP proxy is the sum of absolute synaptic currents over all neurons
+    at each recorded time step:
+
+    .. math::
+
+        \\text{LFP}(t) = \\sum_i \\left( |I_{\\text{ex},i}(t)| + |I_{\\text{in},i}(t)| \\right)
+
+    Each layer is shown in its own panel (shared x-axis) so that
+    per-layer amplitude differences are visible without overlap.
 
     Parameters
     ----------
-    spikes : dict[str, pd.DataFrame]
+    currents : dict[str, pd.DataFrame]
+        Per-layer DataFrames with columns ``sender``, ``time_ms``,
+        ``I_syn_ex``, ``I_syn_in``, as produced by
+        :meth:`M1Network.save_current_data`.
     layer_order : list[str]
-    sim_time : float
-        Total simulation time (ms).
+        Ordered list of layer names to plot.
     dt : float, optional
-        Time bin width (ms).  Default ``0.1``.
+        Multimeter recording interval (ms).  Must match the ``interval``
+        argument passed to :meth:`M1Network.create_current_recorders`.
+        Default ``0.1``.
     smooth_sigma : float, optional
-        Gaussian smoothing sigma applied to the PSD.  Default ``1.5``.
+        Gaussian smoothing sigma (in samples) applied to the LFP signal
+        before plotting.  ``0`` disables smoothing.  Default ``0``.
+    window_ms : float or None, optional
+        If given, only the last ``window_ms`` ms of the recording are
+        displayed.  ``None`` (default) shows the full recording.
+    """
+    n_layers = len(layer_order)
+    fig, axes = plt.subplots(n_layers, 1, figsize=(10, 8), sharex=True)
+    plt.subplots_adjust(hspace=0.0)
+
+    for i, layer in enumerate(layer_order):
+        ax = axes[i]
+        data = currents[layer]
+
+        # LFP proxy: Σ |I_syn_ex| + Σ |I_syn_in| per time step
+        lfp = (
+            data
+            .assign(_abs=np.abs(data["I_syn_ex"]) + np.abs(data["I_syn_in"]))
+            .groupby("time_ms")["_abs"]
+            .sum()
+            .sort_index()
+        )
+        t = lfp.index.values
+        sig = lfp.values
+
+        if smooth_sigma > 0:
+            sig = scipy.ndimage.gaussian_filter1d(sig, smooth_sigma)
+
+        if window_ms is not None:
+            mask = t >= t[-1] - window_ms
+            t, sig = t[mask], sig[mask]
+
+        ax.plot(t, sig, color=_COLOR_LIST[i], linewidth=1.0)
+        ax.annotate(
+            layer,
+            xy=(0.01, 0.72),
+            xycoords="axes fraction",
+            fontsize=12,
+            fontweight="bold",
+        )
+        ax.spines[["right", "top"]].set_visible(False)
+
+        if i < n_layers - 1:
+            ax.tick_params(axis="x", bottom=False)
+        else:
+            ax.set_xlabel("Time (ms)", fontsize=15)
+
+        if i == n_layers // 2:
+            ax.set_ylabel(r"$\sum|I_\mathrm{syn}|$ (pA)", fontsize=13)
+
+    plt.tight_layout()
+    plt.savefig("figures/lfp_signal.png", dpi=300, bbox_inches="tight")
+
+
+def plot_lfp_psd(
+    currents,
+    layer_order,
+    dt=0.1,
+    nperseg=None,
+    noverlap=None,
+    window="hann",
+    max_freq_hz=100,
+    f_min_hz=1.0,
+):
+    """
+    Power spectral density of a biologically plausible LFP proxy via
+    Welch's method.
+
+    The LFP proxy is the sum of absolute synaptic currents over all neurons
+    in the population at each recorded time step:
+
+    .. math::
+
+        \\text{LFP}(t) = \\sum_i \\left( |I_{\\text{ex},i}(t)| + |I_{\\text{in},i}(t)| \\right)
+
+    This proxy was proposed and validated against electrode recordings in
+    Mazzoni *et al.* (2015, PLOS Comput. Biol.); the underlying data are
+    archived at https://doi.org/10.5061/dryad.j5r51.
+
+    Welch's method divides the signal into overlapping segments, windows
+    each one, computes a periodogram, and averages them.  Compared with a
+    single-shot FFT this reduces variance in the PSD estimate and
+    suppresses DC without requiring post-hoc smoothing or bin-skipping.
+
+    Parameters
+    ----------
+    currents : dict[str, pd.DataFrame]
+        Per-layer DataFrames with columns ``sender``, ``time_ms``,
+        ``I_syn_ex``, ``I_syn_in``, as produced by
+        :meth:`M1Network.save_current_data`.
+    layer_order : list[str]
+        Ordered list of layer names to plot.
+    dt : float, optional
+        Multimeter recording interval (ms).  Must match the ``interval``
+        argument passed to :meth:`M1Network.create_current_recorders`.
+        Default ``0.1``.
+    nperseg : int or None, optional
+        Number of samples per Welch segment.  Controls the trade-off
+        between frequency resolution (``fs / nperseg`` Hz) and variance
+        reduction (more segments = lower variance).  ``None`` (default)
+        sets it to ``max(signal_length // 4, 64)`` at runtime, which
+        targets ~7 averaged segments and scales with simulation length.
+        For a 500 ms simulation at ``dt = 0.1`` ms this gives
+        ``nperseg = 1 250`` → ~8 Hz resolution.
+    noverlap : int or None, optional
+        Number of samples shared between adjacent segments.  ``None``
+        (default) uses 50 % overlap (``nperseg // 2``).
+    window : str or array, optional
+        Windowing function passed to :func:`scipy.signal.welch`.
+        ``'hann'`` (default) minimises spectral leakage.
     max_freq_hz : float, optional
         Upper frequency limit of the plot (Hz).  Default ``100``.
+    f_min_hz : float, optional
+        Lower frequency limit of the plot (Hz); also used to mask the DC
+        component.  Default ``1.0``.
     """
-    time_bins = np.arange(0, sim_time, dt)
-    sample_rate = 1000.0 / dt
+    fs = 1000.0 / dt  # sampling frequency in Hz
 
     fig, ax = plt.subplots(figsize=(8, 6))
+
     for i, layer in enumerate(layer_order):
-        data = spikes[layer]
-        times = data["time_ms"].values
-        num_neurons = data["sender"].nunique()
+        data = currents[layer]
 
-        counts, _ = np.histogram(times, bins=time_bins)
-        rate = (counts / num_neurons) * sample_rate
+        # LFP proxy: Σ |I_syn_ex| + Σ |I_syn_in| per time step, over all neurons
+        lfp_proxy = (
+            data
+            .assign(_abs=np.abs(data["I_syn_ex"]) + np.abs(data["I_syn_in"]))
+            .groupby("time_ms")["_abs"]
+            .sum()
+            .sort_index()
+            .values
+        )
 
-        ft = np.fft.rfft(rate)
-        power = scipy.ndimage.gaussian_filter1d(np.square(np.abs(ft)), smooth_sigma)
-        freq = np.linspace(0, sample_rate / 2, len(power))
+        # Resolve defaults at runtime so they scale with signal length
+        _nperseg  = nperseg  if nperseg  is not None else max(len(lfp_proxy) // 4, 64)
+        _noverlap = noverlap if noverlap is not None else _nperseg // 2
 
-        ax.plot(freq[3:], power[3:], color=_COLOR_LIST[i], label=layer)
+        freq, power = scipy.signal.welch(
+            lfp_proxy,
+            fs=fs,
+            window=window,
+            nperseg=_nperseg,
+            noverlap=_noverlap,
+            scaling="density",   # pA²/Hz
+            detrend="constant",  # remove per-segment mean → suppresses DC
+        )
+
+        mask = freq >= f_min_hz
+        ax.plot(freq[mask], power[mask], color=_COLOR_LIST[i], label=layer)
 
     ax.spines[["right", "top"]].set_visible(False)
     ax.set_xlabel("Frequency (Hz)", fontsize=15)
-    ax.set_ylabel("Power", fontsize=15)
-    ax.set_title("Power Spectral Density of Firing Rates", fontsize=15)
-    ax.set_xlim(0, max_freq_hz)
+    ax.set_ylabel("PSD (pA²/Hz)", fontsize=15)
+    ax.set_title(r"LFP Proxy PSD  $\left(\sum|I_\mathrm{syn}|\right)$", fontsize=15)
+    ax.set_xlim(f_min_hz, max_freq_hz)
     ax.legend()
-    plt.savefig("figures/psd.png", dpi=300, bbox_inches="tight")
+    plt.savefig("figures/lfp_psd.png", dpi=300, bbox_inches="tight")
