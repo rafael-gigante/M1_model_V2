@@ -8,13 +8,14 @@ bg_layer = [2000, 1850, 2000, 1850, 2000, 1850, 2000, 1850]
 
 num_cols = 9
 
-simulation_time = 1100.0 # ms
+simulation_time = 500.0 # ms
 
 d_ex = 1.5      	# Excitatory delay (ms)
 std_d_ex = 0.75 	# Std. Excitatory delay (ms)
 d_in = 0.80      # Inhibitory delay (ms)
 std_d_in = 0.4  	# Std. Inhibitory delay (ms)
-tau_syn = 0.5    # Post-synaptic current time constant (ms)
+tau_syn_ex = 0.5   # Excitatory time constant (ms)
+tau_syn_in = 0.5  # Inhibitory time constant (ms)
 tau_m   = 10.0		# membrane time constant (ms)
 tau_ref = 2.0		# absolute refractory period (ms)
 Cm      = 250.0		# membrane capacity (pF)
@@ -33,8 +34,9 @@ neuron_params_LIF = {
     "tau_m":      tau_m,    # Membrane Time Constant (ms)
     "V_reset":    v_r,   # Reset Value (mV)
     "E_L":        v_r,   # Resting Potential (Assumed same as Vr based on eq)
-    "tau_syn_ex": tau_syn,     # Synaptic Time Constant (ms)
-    "tau_syn_in": tau_syn,     # Synaptic Time Constant (ms)
+    "tau_syn_ex": tau_syn_ex,     # Synaptic Time Constant (ms)
+    "tau_syn_in": tau_syn_in,     # Synaptic Time Constant (ms)
     
-    "I_e": 0.0,           # Constant input current
+    "I_e": 0.0,           # Constant input 
+    "V_m": -58.0 + 10.0 * nest.random.normal(),           # Initial membrane potential (mV)
 }

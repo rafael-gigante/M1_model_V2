@@ -1,57 +1,68 @@
-import cortex as cx
-import numpy as np
+"""
+Run the M1 Cortical Column Simulation
+======================================
+Initialises the NEST kernel, builds the network via :class:`M1Network`,
+runs the simulation, and saves the spike data.
+
+Post-simulation analysis and plotting are handled by ``run_plots.py``.
+"""
+
+import os
+import sys
+
+# Add validation/ so plots and measures are importable from here.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "validation"))
+
 import nest
-import pandas as pd
 import parameters as params
 import plots as pl
+from network import M1Network
 
-neuron_type = 'LIF'  # Leaky Integrate-and-Fire neuron model
-connection_type = 'random'
 
 if __name__ == "__main__":
-    # Nest kernel initialization
+    # ------------------------------------------------------------------
+    # NEST kernel configuration
+    # ------------------------------------------------------------------
     nest.ResetKernel()
-    nest.SetKernelStatus({"resolution": 0.1})  # Set the simulation resolution
-    nest.total_num_virtual_procs = 5  # Set the number of virtual processes for parallel simulation
-    nest.rng_seed = 67  # Set the random seed for reproducibility
+    nest.SetKernelStatus({"resolution": 0.1})   # time step (ms)
+    nest.total_num_virtual_procs = 8            # parallel virtual processes
+    nest.rng_seed = 172                          # reproducibility seed
     nest.overwrite_files = True
-    nest.data_path = "data"  # Folder must exist
+    nest.data_path = "data"                     # directory must exist
     nest.data_prefix = "m1_"
 
-    # Create neurons and neuron groups
-    print("Creating Cortex Model")
-    # Calculate spatial locations for neurons in the cortical column
-    spatial_locations = cx.spatial_location(params.n_layer, params.layers_name, params.num_cols, 300, 300, 2300, 50)
-    
-    # Plot spatial distribution of neurons in each layer
-    pl.spatial_3d_plot(spatial_locations, params.layers_name)
+    # ------------------------------------------------------------------
+    # Build the M1 network
+    # ------------------------------------------------------------------
+    net = M1Network(
+        neuron_type="LIF",
+        connection_type="random",
+        conn_table_path="code/connection_table.csv",
+        #conn_table_path="code/cortex_spatial_new.csv",
 
-    cortex = {}
-    for layer_name in params.layers_name:
-        points = np.array(spatial_locations[layer_name]).tolist()
-        spatial_dist = nest.spatial.free(points)
-        if neuron_type == 'LIF':
-            neurons = nest.Create('iaf_psc_exp', params=params.neuron_params_LIF, positions=spatial_dist)
-        cortex[layer_name] = neurons
-        print(f"Created layer '{layer_name}' with {len(spatial_locations[layer_name])} neurons.")
+    )
 
-    # Create synapses
-    con_tab = pd.read_csv('code/connection_table.csv', delimiter=' ', index_col=False)
-    cx.build_nest_synapses(cortex, con_tab, connection_type)
-    #pl.matrix_connectivity_nsyn(params.layers_name, cortex)
+    # 1. Create spatially distributed neuron populations
+    net.create_nodes()
 
-    # Create background noise
-    cx.background_noise(cortex, params.bg_freq, params.bg_layer)
-    
-    # Connect spike detectors to each layer
-    cx.connect_spike_detectors(cortex)
+    # 2. Optional: visualise neuron positions before the heavy connect step
+    # pl.spatial_3d_plot(net.spatial_locations, params.layers_name)
 
-    # Run Simulation
-    print(f"Simulating for {params.simulation_time} ms...")
+    # 3. Build recurrent synapses
+    net.connect()
 
-    nest.Simulate(params.simulation_time)
+    # 4. Attach background Poisson input
+    net.create_bg_input()
 
-    print("Simulation complete.")
+    # 5. Attach spike recorders
+    net.create_recorders()
 
-    pl.data_processing()
-    
+    # ------------------------------------------------------------------
+    # Run the simulation
+    # ------------------------------------------------------------------
+    net.simulate()
+
+    # ------------------------------------------------------------------
+    # Post-simulation: merge per-process spike files into combined CSVs
+    # ------------------------------------------------------------------
+    net.save_data(data_path="data", data_prefix="m1_")
